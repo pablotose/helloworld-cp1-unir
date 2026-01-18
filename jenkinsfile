@@ -9,7 +9,7 @@ pipeline {
         stage('Get Code') {
             steps {
                 echo '########## GET CODE ##########'
-                git 'https://github.com/pablotose/helloworld-cp1-unir.git'
+                // git 'https://github.com/pablotose/helloworld-cp1-unir.git'
             }
         }
 
