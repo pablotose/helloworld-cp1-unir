@@ -1,0 +1,132 @@
+pipeline {
+    agent none
+
+    stages {
+
+        stage('Get Code') {
+            agent { label 'Agente-Windows-A' }
+            steps {
+                echo '--- Get Code (Nodo Agente-Windows-A) ---'
+                bat 'whoami'
+                bat 'hostname'
+                echo "WORKSPACE: ${env.WORKSPACE}"
+                git 'https://github.com/pablotose/helloworld-cp1-unir.git'
+                stash name: 'repo', includes: '**/*'
+            }
+        }
+
+        stage('Tests') {
+            parallel {
+
+                stage('Unit') {
+                    agent { label 'Agente-Windows-A' }
+                    steps {
+                        echo '--- Unit (Nodo Agente-Windows-A) ---'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "WORKSPACE: ${env.WORKSPACE}"
+                        unstash 'repo'
+                        bat '''
+                            set PYTHONPATH=%WORKSPACE%
+                            C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m coverage run --branch --source=app --omit=app\\__init__.py,app\\api.py -m pytest --junitxml=result-unit.xml test\\unit
+                            C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m coverage xml
+                        '''
+                        junit allowEmptyResults: true, testResults: 'result-unit.xml'
+                        stash name: 'coverage_xml', includes: 'coverage.xml'
+                    }
+                }
+
+                stage('Rest') {
+                    agent { label 'Agente-Windows-B' }
+                    steps {
+                        echo '--- Rest (Nodo Agente-Windows-B) ---'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "WORKSPACE: ${env.WORKSPACE}"
+                        unstash 'repo'
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            bat '''
+                                set FLASK_APP=app\\api.py
+                                start "flask" /B "C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe" -m flask run
+                                start "wiremock" /B java -jar C:\\Users\\Pablo\\Documents\\Unir\\CP1\\helloworld\\test\\wiremock\\wiremock-standalone-3.13.2.jar --port 9090 --root-dir test\\wiremock
+                                ping -n 10 127.0.0.1
+                                set PYTHONPATH=%WORKSPACE%
+                                C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m pytest --junitxml=result-rest.xml test\\rest
+                            '''
+                        }
+                        junit allowEmptyResults: true, testResults: 'result-rest.xml'
+                    }
+                }
+
+                stage('Static') {
+                    agent { label 'Agente-Windows-C' }
+                    steps {
+                        echo '--- Static (Nodo Agente-Windows-C) ---'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "WORKSPACE: ${env.WORKSPACE}"
+                        unstash 'repo'
+                        bat '''
+                            C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m flake8 --exit-zero --format=pylint app > flake8.out
+                        '''
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')], qualityGates: [[threshold: 8, type: 'TOTAL', unstable: true], [threshold: 10, type: 'TOTAL', unstable: false]]
+                        }
+                    }
+                }
+
+                stage('Security Test') {
+                    agent { label 'Agente-Windows-C' }
+                    steps {
+                        echo '--- Security Test (Nodo Agente-Windows-C) ---'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "WORKSPACE: ${env.WORKSPACE}"
+                        unstash 'repo'
+                        bat '''
+                            C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m bandit --exit-zero -r . -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}"
+                        '''
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')], qualityGates: [[threshold: 2, type: 'TOTAL', unstable: true], [threshold: 4, type: 'TOTAL', unstable: false]]
+                        }
+                    }
+                }
+
+                stage('Performance') {
+                    agent { label 'Agente-Windows-B' }
+                    steps {
+                        echo '--- Performance (Nodo Agente-Windows-B) ---'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "WORKSPACE: ${env.WORKSPACE}"
+                        unstash 'repo'
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            bat '''
+                                set FLASK_APP=app\\api.py 
+                                start "flask" /B C:\\Users\\Pablo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -m flask run
+                                ping -n 10 127.0.0.1
+                                C:\\Users\\Pablo\\Documents\\Unir\\CP1\\apache-jmeter-5.6.3\\bin\\jmeter -n -t test\\jmeter\\flask.jmx -f -l flask.jtl
+                            '''
+                        }
+                        perfReport sourceDataFiles: 'flask.jtl'
+                    }
+                }
+            }
+        }
+
+        stage('Coverage') {
+            agent { label 'Agente-Windows-A' }
+            steps {
+                echo '--- Coverage (Nodo Agente-Windows-A) ---'
+                bat 'whoami'
+                bat 'hostname'
+                echo "WORKSPACE: ${env.WORKSPACE}"
+                unstash 'repo'
+                unstash 'coverage_xml'
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    recordCoverage qualityGates: [[criticality: 'ERROR', metric: 'LINE', threshold: 85.0], [metric: 'LINE', threshold: 95.0], [criticality: 'ERROR', metric: 'BRANCH', threshold: 80.0], [metric: 'BRANCH', threshold: 90.0]], tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']]
+                }
+            }
+        }
+    }
+}
